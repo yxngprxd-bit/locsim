@@ -1,0 +1,133 @@
+name: Build locsim Rootless
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/build-rootless.yml"
+      - "Makefile"
+      - "*.m"
+      - "*.h"
+      - "control"
+      - "layout/**"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: locsim-rootless
+    runs-on: macos-15
+
+    env:
+      THEOS: /opt/theos
+
+    steps:
+      - name: Checkout locsim
+        uses: actions/checkout@v5
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+
+          brew install ldid dpkg
+
+          sudo git clone --recursive --quiet \
+            https://github.com/theos/theos.git \
+            "$THEOS"
+
+          sudo chown -R "$(id -un)" "$THEOS"
+
+      - name: Install iOS SDK
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$RUNNER_TEMP/sdk"
+
+          curl -fL \
+            -o "$RUNNER_TEMP/iPhoneOS16.5.sdk.tar.xz" \
+            https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz
+
+          sudo mkdir -p "$THEOS/sdks"
+
+          sudo tar -xJf \
+            "$RUNNER_TEMP/iPhoneOS16.5.sdk.tar.xz" \
+            -C "$THEOS/sdks"
+
+          echo "Available SDKs:"
+          ls -lah "$THEOS/sdks"
+
+      - name: Show original Makefile
+        run: |
+          echo "===== ORIGINAL MAKEFILE ====="
+          cat Makefile
+          echo "============================="
+
+      - name: Configure rootless build
+        run: |
+          set -euo pipefail
+
+          cat >> Makefile <<'EOF'
+
+          # GitHub Actions rootless build overrides
+          THEOS_PACKAGE_SCHEME = rootless
+          ARCHS = arm64
+          TARGET = iphone:clang:16.5:15.0
+          EOF
+
+          echo "===== FINAL MAKEFILE ====="
+          cat Makefile
+          echo "=========================="
+
+      - name: Build rootless package
+        run: |
+          set -euo pipefail
+
+          export THEOS="$THEOS"
+
+          make clean || true
+
+          make package \
+            FINALPACKAGE=1 \
+            THEOS_PACKAGE_SCHEME=rootless \
+            ARCHS=arm64
+
+      - name: Find generated packages
+        run: |
+          set -euo pipefail
+
+          echo "Searching for DEBs..."
+
+          find . \
+            -type f \
+            -name "*.deb" \
+            -print
+
+          DEB_COUNT="$(find . -type f -name "*.deb" | wc -l | tr -d ' ')"
+
+          if [ "$DEB_COUNT" -eq 0 ]; then
+            echo "::error::No DEB package was generated."
+            exit 1
+          fi
+
+      - name: Collect rootless package
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+
+          find . \
+            -type f \
+            -name "*.deb" \
+            -exec cp {} "$GITHUB_WORKSPACE/artifacts/" \;
+
+          echo "Final artifacts:"
+          ls -lah "$GITHUB_WORKSPACE/artifacts"
+
+      - name: Upload locsim rootless
+        uses: actions/upload-artifact@v6
+        with:
+          name: locsim-rootless
+          path: artifacts/*.deb
+          if-no-files-found: error
+          retention-days: 7
