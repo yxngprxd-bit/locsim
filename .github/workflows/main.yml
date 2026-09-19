@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - ".github/workflows/build-rootless.yml"
+      - ".github/workflows/main.yml"
       - "Makefile"
       - "*.m"
       - "*.h"
@@ -23,14 +23,22 @@ jobs:
       THEOS: /opt/theos
 
     steps:
+      # -------------------------------------------------------
+      # 1. Checkout repository
+      # -------------------------------------------------------
       - name: Checkout locsim
         uses: actions/checkout@v5
 
+      # -------------------------------------------------------
+      # 2. Install build dependencies + Theos
+      # -------------------------------------------------------
       - name: Install dependencies
         run: |
           set -euo pipefail
 
           brew install ldid dpkg make
+
+          echo "Installing Theos..."
 
           sudo git clone --recursive --quiet \
             https://github.com/theos/theos.git \
@@ -38,9 +46,17 @@ jobs:
 
           sudo chown -R "$(id -un)" "$THEOS"
 
+          echo "Theos installed:"
+          ls -lah "$THEOS"
+
+      # -------------------------------------------------------
+      # 3. Install iOS SDK
+      # -------------------------------------------------------
       - name: Install iOS SDK
         run: |
           set -euo pipefail
+
+          echo "Downloading iOS 16.5 SDK..."
 
           curl -fL \
             -o "$RUNNER_TEMP/iPhoneOS16.5.sdk.tar.xz" \
@@ -52,9 +68,13 @@ jobs:
             "$RUNNER_TEMP/iPhoneOS16.5.sdk.tar.xz" \
             -C "$THEOS/sdks"
 
+          echo
           echo "Available SDKs:"
           ls -lah "$THEOS/sdks"
 
+      # -------------------------------------------------------
+      # 4. Remove locsim's old Xcode 11 configuration
+      # -------------------------------------------------------
       - name: Fix legacy locsim Makefile
         run: |
           set -euo pipefail
@@ -63,11 +83,12 @@ jobs:
           cat Makefile
           echo "============================="
 
-          # Remove old hard-coded Xcode/toolchain settings.
+          # Remove references to the ancient Xcode 11 toolchain.
           sed -i '' \
             '/Xcode11\.xctoolchain/d' \
             Makefile
 
+          # Remove existing TOOLCHAIN overrides.
           sed -i '' \
             '/^export[[:space:]].*TOOLCHAIN/d' \
             Makefile || true
@@ -76,20 +97,22 @@ jobs:
             '/^[[:space:]]*TOOLCHAIN[[:space:]]*=/d' \
             Makefile || true
 
+          # Remove existing package scheme.
           sed -i '' \
             '/^[[:space:]]*THEOS_PACKAGE_SCHEME[[:space:]]*=/d' \
             Makefile || true
 
+          # Remove existing architecture configuration.
           sed -i '' \
             '/^[[:space:]]*ARCHS[[:space:]]*=/d' \
             Makefile || true
 
+          # Remove existing TARGET configuration.
           sed -i '' \
             '/^[[:space:]]*TARGET[[:space:]]*=/d' \
             Makefile || true
 
-          # Put our modern build configuration at the TOP so Theos sees it
-          # before any includes are evaluated.
+          # Create modern rootless configuration.
           {
             echo 'THEOS_PACKAGE_SCHEME = rootless'
             echo 'ARCHS = arm64'
@@ -103,29 +126,42 @@ jobs:
           echo
           echo "===== PATCHED MAKEFILE ====="
           cat Makefile
-          echo "============================"
+          echo "============================="
 
+      # -------------------------------------------------------
+      # 5. Verify we're using modern Apple clang
+      # -------------------------------------------------------
       - name: Verify compiler
         run: |
           set -euo pipefail
 
           echo "Apple clang:"
           xcrun --sdk iphoneos --find clang
+
+          echo
           xcrun --sdk iphoneos clang --version
 
           echo
-          echo "Checking for leftover Xcode11 references..."
+          echo "Checking source/build configuration for legacy Xcode11 references..."
 
           if grep -R "Xcode11.xctoolchain" . \
             --exclude-dir=.git \
-            --exclude="build-rootless.yml"; then
+            --exclude-dir=.github \
+            --exclude-dir=.theos; then
+
             echo "::error::A legacy Xcode11 toolchain reference still exists."
             exit 1
+
           fi
 
-          echo "No legacy Xcode11 toolchain references found."
+          echo
+          echo "No legacy Xcode11 references found."
+          echo "Compiler configuration looks good."
 
-      - name: Build locsim rootless
+      # -------------------------------------------------------
+      # 6. Clean previous build
+      # -------------------------------------------------------
+      - name: Clean
         run: |
           set -euo pipefail
 
@@ -133,17 +169,41 @@ jobs:
 
           make clean || true
 
+          rm -rf packages
+          rm -rf artifacts
+
+      # -------------------------------------------------------
+      # 7. Build locsim
+      # -------------------------------------------------------
+      - name: Build locsim rootless
+        run: |
+          set -euo pipefail
+
+          export THEOS="$THEOS"
+
+          echo "Starting rootless locsim build..."
+          echo
+          echo "THEOS=$THEOS"
+          echo "ARCHS=arm64"
+          echo "TARGET=iphone:clang:16.5:15.0"
+          echo "SCHEME=rootless"
+          echo
+
           make package \
             FINALPACKAGE=1 \
             THEOS_PACKAGE_SCHEME=rootless \
             ARCHS=arm64 \
             TARGET=iphone:clang:16.5:15.0
 
+      # -------------------------------------------------------
+      # 8. Locate generated DEB
+      # -------------------------------------------------------
       - name: Find generated package
         run: |
           set -euo pipefail
 
-          echo "Generated DEBs:"
+          echo "Searching for generated DEB packages..."
+          echo
 
           find . \
             -type f \
@@ -158,11 +218,17 @@ jobs:
               | tr -d ' '
           )"
 
+          echo
+          echo "DEB count: $DEB_COUNT"
+
           if [ "$DEB_COUNT" -eq 0 ]; then
             echo "::error::No DEB package was generated."
             exit 1
           fi
 
+      # -------------------------------------------------------
+      # 9. Collect artifact
+      # -------------------------------------------------------
       - name: Collect package
         run: |
           set -euo pipefail
@@ -174,9 +240,16 @@ jobs:
             -name "*.deb" \
             -exec cp {} "$GITHUB_WORKSPACE/artifacts/" \;
 
-          echo "Final package:"
+          echo
+          echo "===== FINAL ARTIFACTS ====="
+
           ls -lah "$GITHUB_WORKSPACE/artifacts"
 
+          echo "==========================="
+
+      # -------------------------------------------------------
+      # 10. Upload artifact
+      # -------------------------------------------------------
       - name: Upload locsim rootless
         uses: actions/upload-artifact@v6
         with:
