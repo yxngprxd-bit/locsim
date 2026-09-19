@@ -23,21 +23,24 @@ jobs:
       THEOS: /opt/theos
 
     steps:
-      # -------------------------------------------------------
-      # 1. Checkout repository
-      # -------------------------------------------------------
+      # =======================================================
+      # 1. CHECKOUT
+      # =======================================================
       - name: Checkout locsim
         uses: actions/checkout@v5
 
-      # -------------------------------------------------------
-      # 2. Install build dependencies + Theos
-      # -------------------------------------------------------
+      # =======================================================
+      # 2. INSTALL DEPENDENCIES + THEOS
+      # =======================================================
       - name: Install dependencies
         run: |
           set -euo pipefail
 
+          echo "Installing build dependencies..."
+
           brew install ldid dpkg make
 
+          echo
           echo "Installing Theos..."
 
           sudo git clone --recursive --quiet \
@@ -46,12 +49,14 @@ jobs:
 
           sudo chown -R "$(id -un)" "$THEOS"
 
-          echo "Theos installed:"
+          echo
+          echo "Theos installed successfully."
+
           ls -lah "$THEOS"
 
-      # -------------------------------------------------------
-      # 3. Install iOS SDK
-      # -------------------------------------------------------
+      # =======================================================
+      # 3. INSTALL iOS SDK
+      # =======================================================
       - name: Install iOS SDK
         run: |
           set -euo pipefail
@@ -70,25 +75,33 @@ jobs:
 
           echo
           echo "Available SDKs:"
+
           ls -lah "$THEOS/sdks"
 
-      # -------------------------------------------------------
-      # 4. Remove locsim's old Xcode 11 configuration
-      # -------------------------------------------------------
+      # =======================================================
+      # 4. PATCH OLD LOCSIM MAKEFILE
+      # =======================================================
       - name: Fix legacy locsim Makefile
         run: |
           set -euo pipefail
 
-          echo "===== ORIGINAL MAKEFILE ====="
-          cat Makefile
-          echo "============================="
+          echo "================================"
+          echo "ORIGINAL MAKEFILE"
+          echo "================================"
 
-          # Remove references to the ancient Xcode 11 toolchain.
+          cat Makefile
+
+          echo
+          echo "================================"
+          echo "PATCHING..."
+          echo "================================"
+
+          # Remove old hard-coded Xcode 11 toolchain references.
           sed -i '' \
             '/Xcode11\.xctoolchain/d' \
             Makefile
 
-          # Remove existing TOOLCHAIN overrides.
+          # Remove old TOOLCHAIN configuration.
           sed -i '' \
             '/^export[[:space:]].*TOOLCHAIN/d' \
             Makefile || true
@@ -97,7 +110,7 @@ jobs:
             '/^[[:space:]]*TOOLCHAIN[[:space:]]*=/d' \
             Makefile || true
 
-          # Remove existing package scheme.
+          # Remove existing rootless/package scheme configuration.
           sed -i '' \
             '/^[[:space:]]*THEOS_PACKAGE_SCHEME[[:space:]]*=/d' \
             Makefile || true
@@ -107,12 +120,12 @@ jobs:
             '/^[[:space:]]*ARCHS[[:space:]]*=/d' \
             Makefile || true
 
-          # Remove existing TARGET configuration.
+          # Remove existing target configuration.
           sed -i '' \
             '/^[[:space:]]*TARGET[[:space:]]*=/d' \
             Makefile || true
 
-          # Create modern rootless configuration.
+          # Add modern rootless configuration at the very top.
           {
             echo 'THEOS_PACKAGE_SCHEME = rootless'
             echo 'ARCHS = arm64'
@@ -124,13 +137,15 @@ jobs:
           mv Makefile.new Makefile
 
           echo
-          echo "===== PATCHED MAKEFILE ====="
-          cat Makefile
-          echo "============================="
+          echo "================================"
+          echo "PATCHED MAKEFILE"
+          echo "================================"
 
-      # -------------------------------------------------------
-      # 5. Verify we're using modern Apple clang
-      # -------------------------------------------------------
+          cat Makefile
+
+      # =======================================================
+      # 5. VERIFY COMPILER
+      # =======================================================
       - name: Verify compiler
         run: |
           set -euo pipefail
@@ -158,51 +173,73 @@ jobs:
           echo "No legacy Xcode11 references found."
           echo "Compiler configuration looks good."
 
-      # -------------------------------------------------------
-      # 6. Clean previous build
-      # -------------------------------------------------------
-      - name: Clean
+      # =======================================================
+      # 6. CLEAN
+      # =======================================================
+      - name: Clean previous build
         run: |
           set -euo pipefail
 
           export THEOS="$THEOS"
+
+          echo "Cleaning previous build..."
 
           make clean || true
 
           rm -rf packages
           rm -rf artifacts
 
-      # -------------------------------------------------------
-      # 7. Build locsim
-      # -------------------------------------------------------
+          echo "Clean complete."
+
+      # =======================================================
+      # 7. BUILD ROOTLESS LOCSIM
+      #
+      # Clang 17 reports locsim's old variable `p` as:
+      #
+      #   -Wunused-but-set-variable
+      #
+      # The original project treats warnings as errors.
+      #
+      # We keep warnings enabled but prevent ONLY this specific
+      # warning from terminating the build.
+      # =======================================================
       - name: Build locsim rootless
         run: |
           set -euo pipefail
 
           export THEOS="$THEOS"
 
-          echo "Starting rootless locsim build..."
+          echo "================================"
+          echo "Starting rootless locsim build"
+          echo "================================"
+
           echo
           echo "THEOS=$THEOS"
           echo "ARCHS=arm64"
           echo "TARGET=iphone:clang:16.5:15.0"
           echo "SCHEME=rootless"
+          echo "Clang compatibility flag:"
+          echo "-Wno-error=unused-but-set-variable"
           echo
 
           make package \
             FINALPACKAGE=1 \
             THEOS_PACKAGE_SCHEME=rootless \
             ARCHS=arm64 \
-            TARGET=iphone:clang:16.5:15.0
+            TARGET=iphone:clang:16.5:15.0 \
+            ADDITIONAL_OBJCFLAGS="-Wno-error=unused-but-set-variable"
 
-      # -------------------------------------------------------
-      # 8. Locate generated DEB
-      # -------------------------------------------------------
+      # =======================================================
+      # 8. FIND GENERATED DEB
+      # =======================================================
       - name: Find generated package
         run: |
           set -euo pipefail
 
-          echo "Searching for generated DEB packages..."
+          echo
+          echo "================================"
+          echo "Searching for generated DEBs"
+          echo "================================"
           echo
 
           find . \
@@ -226,9 +263,12 @@ jobs:
             exit 1
           fi
 
-      # -------------------------------------------------------
-      # 9. Collect artifact
-      # -------------------------------------------------------
+          echo
+          echo "Package generation successful."
+
+      # =======================================================
+      # 9. COLLECT DEB
+      # =======================================================
       - name: Collect package
         run: |
           set -euo pipefail
@@ -241,15 +281,17 @@ jobs:
             -exec cp {} "$GITHUB_WORKSPACE/artifacts/" \;
 
           echo
-          echo "===== FINAL ARTIFACTS ====="
+          echo "================================"
+          echo "FINAL ARTIFACTS"
+          echo "================================"
 
           ls -lah "$GITHUB_WORKSPACE/artifacts"
 
-          echo "==========================="
+          echo "================================"
 
-      # -------------------------------------------------------
-      # 10. Upload artifact
-      # -------------------------------------------------------
+      # =======================================================
+      # 10. UPLOAD DEB
+      # =======================================================
       - name: Upload locsim rootless
         uses: actions/upload-artifact@v6
         with:
