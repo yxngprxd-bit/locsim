@@ -30,7 +30,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          brew install ldid dpkg
+          brew install ldid dpkg make
 
           sudo git clone --recursive --quiet \
             https://github.com/theos/theos.git \
@@ -41,8 +41,6 @@ jobs:
       - name: Install iOS SDK
         run: |
           set -euo pipefail
-
-          mkdir -p "$RUNNER_TEMP/sdk"
 
           curl -fL \
             -o "$RUNNER_TEMP/iPhoneOS16.5.sdk.tar.xz" \
@@ -57,29 +55,77 @@ jobs:
           echo "Available SDKs:"
           ls -lah "$THEOS/sdks"
 
-      - name: Show original Makefile
+      - name: Fix legacy locsim Makefile
         run: |
+          set -euo pipefail
+
           echo "===== ORIGINAL MAKEFILE ====="
           cat Makefile
           echo "============================="
 
-      - name: Configure rootless build
+          # Remove old hard-coded Xcode/toolchain settings.
+          sed -i '' \
+            '/Xcode11\.xctoolchain/d' \
+            Makefile
+
+          sed -i '' \
+            '/^export[[:space:]].*TOOLCHAIN/d' \
+            Makefile || true
+
+          sed -i '' \
+            '/^[[:space:]]*TOOLCHAIN[[:space:]]*=/d' \
+            Makefile || true
+
+          sed -i '' \
+            '/^[[:space:]]*THEOS_PACKAGE_SCHEME[[:space:]]*=/d' \
+            Makefile || true
+
+          sed -i '' \
+            '/^[[:space:]]*ARCHS[[:space:]]*=/d' \
+            Makefile || true
+
+          sed -i '' \
+            '/^[[:space:]]*TARGET[[:space:]]*=/d' \
+            Makefile || true
+
+          # Put our modern build configuration at the TOP so Theos sees it
+          # before any includes are evaluated.
+          {
+            echo 'THEOS_PACKAGE_SCHEME = rootless'
+            echo 'ARCHS = arm64'
+            echo 'TARGET = iphone:clang:16.5:15.0'
+            echo ''
+            cat Makefile
+          } > Makefile.new
+
+          mv Makefile.new Makefile
+
+          echo
+          echo "===== PATCHED MAKEFILE ====="
+          cat Makefile
+          echo "============================"
+
+      - name: Verify compiler
         run: |
           set -euo pipefail
 
-          cat >> Makefile <<'EOF'
+          echo "Apple clang:"
+          xcrun --sdk iphoneos --find clang
+          xcrun --sdk iphoneos clang --version
 
-          # GitHub Actions rootless build overrides
-          THEOS_PACKAGE_SCHEME = rootless
-          ARCHS = arm64
-          TARGET = iphone:clang:16.5:15.0
-          EOF
+          echo
+          echo "Checking for leftover Xcode11 references..."
 
-          echo "===== FINAL MAKEFILE ====="
-          cat Makefile
-          echo "=========================="
+          if grep -R "Xcode11.xctoolchain" . \
+            --exclude-dir=.git \
+            --exclude="build-rootless.yml"; then
+            echo "::error::A legacy Xcode11 toolchain reference still exists."
+            exit 1
+          fi
 
-      - name: Build rootless package
+          echo "No legacy Xcode11 toolchain references found."
+
+      - name: Build locsim rootless
         run: |
           set -euo pipefail
 
@@ -90,27 +136,34 @@ jobs:
           make package \
             FINALPACKAGE=1 \
             THEOS_PACKAGE_SCHEME=rootless \
-            ARCHS=arm64
+            ARCHS=arm64 \
+            TARGET=iphone:clang:16.5:15.0
 
-      - name: Find generated packages
+      - name: Find generated package
         run: |
           set -euo pipefail
 
-          echo "Searching for DEBs..."
+          echo "Generated DEBs:"
 
           find . \
             -type f \
             -name "*.deb" \
             -print
 
-          DEB_COUNT="$(find . -type f -name "*.deb" | wc -l | tr -d ' ')"
+          DEB_COUNT="$(
+            find . \
+              -type f \
+              -name "*.deb" \
+              | wc -l \
+              | tr -d ' '
+          )"
 
           if [ "$DEB_COUNT" -eq 0 ]; then
             echo "::error::No DEB package was generated."
             exit 1
           fi
 
-      - name: Collect rootless package
+      - name: Collect package
         run: |
           set -euo pipefail
 
@@ -121,7 +174,7 @@ jobs:
             -name "*.deb" \
             -exec cp {} "$GITHUB_WORKSPACE/artifacts/" \;
 
-          echo "Final artifacts:"
+          echo "Final package:"
           ls -lah "$GITHUB_WORKSPACE/artifacts"
 
       - name: Upload locsim rootless
